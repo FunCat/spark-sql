@@ -4,6 +4,7 @@ logs/
 /build/
 out/
 target/
+metastore_db/
 # Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
 !gradle/wrapper/gradle-wrapper.jar
 

@@ -1,6 +1,6 @@
 package com.epam.hubd.spark.scala.sql.homework
 
-import org.apache.spark.sql._
+import org.apache.spark.sql.{DataFrame, _}
 import org.apache.spark.sql.hive.HiveContext
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.{SparkConf, SparkContext}
@@ -35,6 +35,7 @@ object MotelsHomeRecommendation {
       * Read the bid data from the provided file.
       */
     val rawBids: DataFrame = getRawBids(sqlContext, bidsPath)
+
     /**
       * Task 1:
       * Collect the errors and save the result.
@@ -65,7 +66,7 @@ object MotelsHomeRecommendation {
       * - Convert dates to proper format - use formats in Constants util class
       * - Get rid of records where there is no price for a Losa or the price is not a proper decimal number
       */
-    val bids: DataFrame = getBids(rawBids, exchangeRates, convertDate)
+    val bids: DataFrame = getBids(rawBids, exchangeRates)
 
     /**
       * Task 4:
@@ -107,20 +108,20 @@ object MotelsHomeRecommendation {
     Constants.OUTPUT_DATE_FORMAT.print(Constants.INPUT_DATE_FORMAT.parseDateTime(date))
   }
 
-  def getBids(rawBids: DataFrame, exchangeRates: DataFrame, convertDate: UserDefinedFunction): DataFrame = {
+  def getBids(rawBids: DataFrame, exchangeRates: DataFrame): DataFrame = {
     val correctBidsMap = rawBids.filter(!rawBids("HU").contains("ERROR_"))
       .filter(!(rawBids("US").like("") && rawBids("CA").like("") && rawBids("MX").like("")))
 
-    print("hello")
-    val test2 = correctBidsMap.join(exchangeRates, correctBidsMap.col("BidDate") === exchangeRates.col("ValidFrom")).select("MotelID", "BidDate", "US", "ExchangeRate").withColumn("country", lit("US"))
+    val sourceColumns = correctBidsMap.join(exchangeRates, correctBidsMap.col("BidDate") === exchangeRates.col("ValidFrom"))
+      .select("MotelID", "BidDate", "US", "CA", "MX", "ExchangeRate")
 
-
-    val test = correctBidsMap.rdd.map(row => List(
-      getBidItem(row.getString(0), row.getString(1), "US", row.getString(5), exchangeRates.filter(exchangeRates("ValidFrom") === row.getString(1)).select("ExchangeRate").first().getString(0).toDouble),
-      getBidItem(row.getString(0), row.getString(1), "CA", row.getString(8), exchangeRates.filter(exchangeRates("ValidFrom") === row.getString(1)).select("ExchangeRate").first().getString(0).toDouble),
-      getBidItem(row.getString(0), row.getString(1), "MX", row.getString(6), exchangeRates.filter(exchangeRates("ValidFrom") === row.getString(1)).select("ExchangeRate").first().getString(0).toDouble)
+    val t = sourceColumns.rdd.map(row => List(
+      Row(row.getString(0), row.getString(1), "US", rounded(row.getString(2).toDouble * row.getString(5).toDouble, 3)),
+      Row(row.getString(0), row.getString(1), "CA", rounded(row.getString(3).toDouble * row.getString(5).toDouble, 3)),
+      Row(row.getString(0), row.getString(1), "MX", rounded(row.getString(4).toDouble * row.getString(5).toDouble, 3))
     ))
-    print("hi")
+
+    t.count()
     null
   }
 
