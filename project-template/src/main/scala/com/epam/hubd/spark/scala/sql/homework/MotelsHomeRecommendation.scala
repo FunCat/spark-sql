@@ -4,7 +4,6 @@ import org.apache.spark.sql.{DataFrame, _}
 import org.apache.spark.sql.hive.HiveContext
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.sql.functions._
 
 object MotelsHomeRecommendation {
 
@@ -21,7 +20,6 @@ object MotelsHomeRecommendation {
 
     val sc = new SparkContext(new SparkConf().setAppName("motels-home-recommendation").setMaster("local[4]"))
     val sqlContext = new HiveContext(sc)
-    import sqlContext.implicits._
 
     processData(sqlContext, bidsPath, motelsPath, exchangeRatesPath, outputBasePath)
 
@@ -35,6 +33,7 @@ object MotelsHomeRecommendation {
       * Read the bid data from the provided file.
       */
     val rawBids: DataFrame = getRawBids(sqlContext, bidsPath)
+    rawBids.createOrReplaceTempView("raw_bids")
 
     /**
       * Task 1:
@@ -51,13 +50,14 @@ object MotelsHomeRecommendation {
       * Hint: You will need a mapping between a date/time and rate
       */
     val exchangeRates: DataFrame = getExchangeRates(sqlContext, exchangeRatesPath)
+    exchangeRates.createOrReplaceTempView("exchange_rates")
 
     /**
       * Task 3:
       * UserDefinedFunction to convert between date formats.
       * Hint: Check the formats defined in Constants class
       */
-    val convertDate: UserDefinedFunction = sqlContext.udf.register("convertDate", getConvertDate)
+    val convertDate: UserDefinedFunction = sqlContext.udf.register("convertDate", getConvertDate(_: String))
 
     /**
       * Task 3:
@@ -66,7 +66,7 @@ object MotelsHomeRecommendation {
       * - Convert dates to proper format - use formats in Constants util class
       * - Get rid of records where there is no price for a Losa or the price is not a proper decimal number
       */
-    val bids: DataFrame = getBids(rawBids, exchangeRates)
+    val bids: DataFrame = getBids(rawBids, exchangeRates, sqlContext)
 
     /**
       * Task 4:
@@ -86,7 +86,9 @@ object MotelsHomeRecommendation {
   }
 
   def getRawBids(sqlContext: HiveContext, bidsPath: String): DataFrame = {
-    sqlContext.read.parquet(bidsPath)
+    sqlContext.read
+      .parquet(bidsPath)
+      .toDF("MotelID", "BidDate", "HU", "UK",  "NL", "US", "MX", "AU", "CA", "CN", "KR","BE", "I","JP", "IN", "HN", "GY", "DE")
   }
 
   def getErroneousRecords(rawBids: DataFrame): DataFrame = {
@@ -98,8 +100,8 @@ object MotelsHomeRecommendation {
 
   def getExchangeRates(sqlContext: HiveContext, exchangeRatesPath: String): DataFrame = {
     sqlContext.read
-      .format("com.databricks.spark.csv")
-      .option("delimiter", ",")
+      .format(Constants.CSV_FORMAT)
+      .option("delimiter", Constants.DELIMITER)
       .load(exchangeRatesPath)
       .toDF("ValidFrom", "CurrencyName", "CurrencyCode", "ExchangeRate")
   }
@@ -108,34 +110,44 @@ object MotelsHomeRecommendation {
     Constants.OUTPUT_DATE_FORMAT.print(Constants.INPUT_DATE_FORMAT.parseDateTime(date))
   }
 
-  def getBids(rawBids: DataFrame, exchangeRates: DataFrame): DataFrame = {
+  def getBids(rawBids: DataFrame, exchangeRates: DataFrame, sqlContext: SQLContext): DataFrame = {
+    import sqlContext.implicits._
     val correctBidsMap = rawBids.filter(!rawBids("HU").contains("ERROR_"))
       .filter(!(rawBids("US").like("") && rawBids("CA").like("") && rawBids("MX").like("")))
 
-    val sourceColumns = correctBidsMap.join(exchangeRates, correctBidsMap.col("BidDate") === exchangeRates.col("ValidFrom"))
+    correctBidsMap.join(exchangeRates, correctBidsMap.col("BidDate") === exchangeRates.col("ValidFrom"))
       .select("MotelID", "BidDate", "US", "CA", "MX", "ExchangeRate")
+      .flatMap(row => {
+        val tempList = List(
+          (row.getString(0), row.getString(1), "US", rounded(getNotEmptyPrice(row.getString(2), row.getString(5)), 3)),
+          (row.getString(0), row.getString(1), "CA", rounded(getNotEmptyPrice(row.getString(3), row.getString(5)), 3)),
+          (row.getString(0), row.getString(1), "MX", rounded(getNotEmptyPrice(row.getString(4), row.getString(5)), 3))
+        )
+        val maxExchangeRate = tempList.maxBy(row => row._4)
+        tempList.filter(row => row._4 == maxExchangeRate._4)
+      }).toDF("MotelID", "BidDate", "Losa", "ExchangeRate")
+      .createOrReplaceTempView("total_price")
 
-    val t = sourceColumns.rdd.map(row => List(
-      Row(row.getString(0), row.getString(1), "US", rounded(row.getString(2).toDouble * row.getString(5).toDouble, 3)),
-      Row(row.getString(0), row.getString(1), "CA", rounded(row.getString(3).toDouble * row.getString(5).toDouble, 3)),
-      Row(row.getString(0), row.getString(1), "MX", rounded(row.getString(4).toDouble * row.getString(5).toDouble, 3))
-    ))
-
-    t.count()
-    null
+    sqlContext.sql("SELECT MotelID, convertDate(BidDate) AS BidDate, Losa, ExchangeRate FROM total_price")
   }
 
-  def getMotels(sqlContext: HiveContext, motelsPath: String): DataFrame = ???
+  def getMotels(sqlContext: HiveContext, motelsPath: String): DataFrame = {
+    sqlContext.read
+      .parquet(motelsPath)
+      .toDF("Motel_ID", "MotelName", "Country", "URL", "Comment")
+  }
 
-  def getEnriched(bids: DataFrame, motels: DataFrame): DataFrame = ???
+  def getEnriched(bids: DataFrame, motels: DataFrame): DataFrame = {
+    bids.join(motels, bids.col("MotelID") === motels.col("Motel_ID"))
+      .select("MotelID", "MotelName", "BidDate", "Losa", "ExchangeRate")
+  }
 
   def rounded(n: Double, x: Int) = {
     val w = Math.pow(10, x)
     math.round(n * w) / w
   }
 
-  def getBidItem(motelId: String, bidDate: String, loSa: String, price: String, exchangeRate: Double) = {
-    Row(motelId, Constants.OUTPUT_DATE_FORMAT.print(Constants.INPUT_DATE_FORMAT.parseDateTime(bidDate)),
-      loSa, rounded(if (price.isEmpty) 0 else price.toDouble * exchangeRate, 3))
+  def getNotEmptyPrice(firstPrice: String, exchangePrice: String) = {
+    if (firstPrice.isEmpty) 0.0 else firstPrice.toDouble * exchangePrice.toDouble
   }
 }
