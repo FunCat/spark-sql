@@ -31,6 +31,10 @@ object MotelsHomeRecommendation {
     /**
       * Task 1:
       * Read the bid data from the provided file.
+      * Split each line from the file and return list of strings.
+      * Example:
+      * input -> "0000002,15-04-08-2016,0.89,0.92,1.32,2.07,1.35"
+      * output -> Row("0000002", "15-04-08-2016", "0.89", "0.92", "1.32", "2.07", "1.35")
       */
     val rawBids: DataFrame = getRawBids(sqlContext, bidsPath)
     rawBids.createOrReplaceTempView("raw_bids")
@@ -38,6 +42,13 @@ object MotelsHomeRecommendation {
     /**
       * Task 1:
       * Collect the errors and save the result.
+      * Find all records which contain ERROR message and after that group them by date.
+      * Example:
+      * input ->  Row("1", "06-05-02-2016", "ERROR_1"),
+      *           Row("3", "07-05-02-2016", "ERROR_2"),
+      *           Row("4", "06-05-02-2016", "ERROR_1")
+      * output -> Row("06-05-02-2016","ERROR_1","2"),
+      *           Row("07-05-02-2016","ERROR_2","1")
       */
     val erroneousRecords: DataFrame = getErroneousRecords(rawBids)
     erroneousRecords.write
@@ -47,37 +58,59 @@ object MotelsHomeRecommendation {
     /**
       * Task 2:
       * Read the exchange rate information.
-      * Hint: You will need a mapping between a date/time and rate
+      * Split each line and return DataFrame. Each row contains information about one exchange rate.
+      * Example:
+      * input -> "11-05-08-2016,Euro,EUR,0.873","10-06-11-2015,Euro,EUR,0.987","10-05-02-2016,Euro,EUR,0.876"
+      * output -> Row("11-05-08-2016","Euro","EUR","0.873"),
+      *           Row("10-06-11-2015","Euro","EUR","0.987"),
+      *           Row("10-05-02-2016","Euro","EUR","0.876")
       */
     val exchangeRates: DataFrame = getExchangeRates(sqlContext, exchangeRatesPath)
     exchangeRates.createOrReplaceTempView("exchange_rates")
 
     /**
       * Task 3:
-      * UserDefinedFunction to convert between date formats.
-      * Hint: Check the formats defined in Constants class
+      * Create UserDefinedFunction to convert between date formats.
+      * Register this UserDefinedFunction by the "convertDate" name.
       */
     val convertDate: UserDefinedFunction = sqlContext.udf.register("convertDate", getConvertDate(_: String))
 
     /**
-      * Task 3:
-      * Transform the rawBids
-      * - Convert USD to EUR. The result should be rounded to 3 decimal precision.
-      * - Convert dates to proper format - use formats in Constants util class
-      * - Get rid of records where there is no price for a Losa or the price is not a proper decimal number
+      * Task 4:
+      * Transform the rawBids and use the BidItem case class.
+      * Get all valid records, convert each record to three records based on the interested countries,
+      * and return all records with the highest price.
+      * Example:
+      * input rawBids -> Row("0000002", "11-05-08-2016", "0.92", "1.68", "0.81", "0.68", "1.59", "", "1.63", "1.77", "2.06", "0.66", "1.53", "", "0.32", "0.88", "0.83", "1.01")
+      * input exchangeRates ->  Row("11-05-08-2016","Euro","EUR","0.873"),
+      *                         Row("10-06-11-2015","Euro","EUR","0.987"),
+      *                         Row("10-05-02-2016","Euro","EUR","0.876")
+      * output -> Row("0000002", "2016-08-05 11:00", "CA", 1.423)
       */
     val bids: DataFrame = getBids(rawBids, exchangeRates, sqlContext)
 
     /**
-      * Task 4:
+      * Task 5:
       * Load motels data.
-      * Hint: You will need the motels name for enrichment and you will use the id for join
+      * Split each line and return DataFrame. Each row of the DataFrame represents the information about one of the motels.
+      * Example:
+      * input ->  "0000001,Olinda Windsor Inn,IN,http://www.motels.home/?partnerID=3cc6e91b-a2e0-4df4-b41c-766679c3fa28,Description",
+      *           "0000002,Merlin Por Motel,JP,http://www.motels.home/?partnerID=4ba51050-eff2-458a-93dd-6360c9d94b63,Description"
+      * output -> Row("0000001", "Olinda Windsor Inn","IN","http://www.motels.home/?partnerID=3cc6e91b-a2e0-4df4-b41c-766679c3fa28", "Description"),
+      *           Row("0000002", "Merlin Por Motel", "JP", "http://www.motels.home/?partnerID=4ba51050-eff2-458a-93dd-6360c9d94b63", "Description")
       */
     val motels: DataFrame = getMotels(sqlContext, motelsPath)
 
     /**
-      * Task5:
-      * Join the bids with motel names.
+      * Task 6:
+      * Join the bids with motel names and create a new DataFrame. Each row of the DataFrame contains information about bid and motel name.
+      * Example:
+      * input bids -> Row("0000002", "2016-08-05 11:00", "CA", 1.423), Row("0000003", "2015-11-07 04:00", "MX", 0.994)
+      * input motels -> Row("0000001", "Olinda Windsor Inn","IN","http://www.motels.home/?partnerID=3cc6e91b-a2e0-4df4-b41c-766679c3fa28", "Description"),
+      *                 Row("0000002", "Merlin Por Motel", "JP", "http://www.motels.home/?partnerID=4ba51050-eff2-458a-93dd-6360c9d94b63", "Description"),
+      *                 Row("0000003", "Olinda Big River Casino", "JP", "http://www.motels.home/?partnerID=4ba51050-eff2-458a-93dd-6360c9d94b63", "Description")
+      * output -> Row("0000002", "Merlin Por Motel", "2016-08-05 11:00", "CA", 1.423),
+      *           Row("0000003", "Olinda Big River Casino", "2015-11-07 04:00", "MX", 0.994)
       */
     val enriched: DataFrame = getEnriched(bids, motels)
     enriched.write
